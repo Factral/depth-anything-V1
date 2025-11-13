@@ -1,0 +1,1 @@
+salloc --mem=400g --nodes=1 --ntasks-per-node=1 --cpus-per-task=64   --partition=ghx4   --account=bfbw-dtai-gh --time=02:00:00 --gpus-per-node=1

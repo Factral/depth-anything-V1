@@ -71,7 +71,9 @@ Please first download our Depth Anything pre-trained model [here](https://huggin
 
 ```bash
 python train_mono.py -m zoedepth -d <nyu | kitti> --pretrained_resource=""
-```
+python train_mono.py -m zoedepth -d  --pretrained_resource="local::./checkpoints/depth_anything_vitl14.pth"
+```a
+
 
 This will automatically use our Depth Anything pre-trained ViT-L encoder.
 
