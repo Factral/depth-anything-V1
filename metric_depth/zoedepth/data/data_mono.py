@@ -291,69 +291,22 @@ class DataLoadPreprocess(Dataset):
 
     def __getitem__(self, idx):
         sample_path = self.filenames[idx]
-        focal = float(sample_path.split()[2])
+        parts = sample_path.split()
+        image_rel = parts[0]
+        depth_rel = parts[1]
+        focal = float(parts[2]) if len(parts) > 2 else 715.0873
+
         sample = {}
 
         if self.mode == 'train':
-            if self.config.dataset == 'kitti' and self.config.use_right and random.random() > 0.5:
-                image_path = os.path.join(
-                    self.config.data_path, remove_leading_slash(sample_path.split()[3]))
-                depth_path = os.path.join(
-                    self.config.gt_path, remove_leading_slash(sample_path.split()[4]))
-            else:
-                image_path = os.path.join(
-                    self.config.data_path, remove_leading_slash(sample_path.split()[0]))
-                depth_path = os.path.join(
-                    self.config.gt_path, remove_leading_slash(sample_path.split()[1]))
+            image_path = os.path.join(self.config.data_path, remove_leading_slash(image_rel))
+            depth_path = os.path.join(self.config.gt_path, remove_leading_slash(depth_rel))
 
-            image = self.reader.open(image_path)
-            depth_gt = self.reader.open(depth_path)
-            w, h = image.size
-
-            if self.config.do_kb_crop:
-                height = image.height
-                width = image.width
-                top_margin = int(height - 352)
-                left_margin = int((width - 1216) / 2)
-                depth_gt = depth_gt.crop(
-                    (left_margin, top_margin, left_margin + 1216, top_margin + 352))
-                image = image.crop(
-                    (left_margin, top_margin, left_margin + 1216, top_margin + 352))
-
-            # Avoid blank boundaries due to pixel registration?
-            # Train images have white border. Test images have black border.
-            if self.config.dataset == 'nyu' and self.config.avoid_boundary:
-                # print("Avoiding Blank Boundaries!")
-                # We just crop and pad again with reflect padding to original size
-                # original_size = image.size
-                crop_params = get_white_border(np.array(image, dtype=np.uint8))
-                image = image.crop((crop_params.left, crop_params.top, crop_params.right, crop_params.bottom))
-                depth_gt = depth_gt.crop((crop_params.left, crop_params.top, crop_params.right, crop_params.bottom))
-
-                # Use reflect padding to fill the blank
-                image = np.array(image)
-                image = np.pad(image, ((crop_params.top, h - crop_params.bottom), (crop_params.left, w - crop_params.right), (0, 0)), mode='reflect')
-                image = Image.fromarray(image)
-
-                depth_gt = np.array(depth_gt)
-                depth_gt = np.pad(depth_gt, ((crop_params.top, h - crop_params.bottom), (crop_params.left, w - crop_params.right)), 'constant', constant_values=0)
-                depth_gt = Image.fromarray(depth_gt)
-
-
-            if self.config.do_random_rotate and (self.config.aug):
-                random_angle = (random.random() - 0.5) * 2 * self.config.degree
-                image = self.rotate_image(image, random_angle)
-                depth_gt = self.rotate_image(
-                    depth_gt, random_angle, flag=Image.NEAREST)
-
-            image = np.asarray(image, dtype=np.float32) / 255.0
-            depth_gt = np.asarray(depth_gt, dtype=np.float32)
-            depth_gt = np.expand_dims(depth_gt, axis=2)
-
-            if self.config.dataset == 'nyu':
-                depth_gt = depth_gt / 1000.0
-            else:
-                depth_gt = depth_gt / 256.0
+            # Load HSI heatcube and depth (assume method='hsi')
+            image_npz_path = image_path.replace('.hdr', '_resampled.npz')
+            image = np.load(image_npz_path)['heatcube']  # H x W x C (C≈49)
+            depth_gt = np.load(depth_path)['depth']      # H x W (meters)
+            depth_gt = np.expand_dims(depth_gt, axis=2)  # H x W x 1
 
             if self.config.aug and (self.config.random_crop):
                 image, depth_gt = self.random_crop(
@@ -370,55 +323,25 @@ class DataLoadPreprocess(Dataset):
                       'mask': mask, **sample}
 
         else:
-            if self.mode == 'online_eval':
-                data_path = self.config.data_path_eval
-            else:
-                data_path = self.config.data_path
+            data_path = self.config.data_path_eval if self.mode == 'online_eval' else self.config.data_path
+            gt_path = self.config.gt_path_eval if self.mode == 'online_eval' else self.config.gt_path
 
-            image_path = os.path.join(
-                data_path, remove_leading_slash(sample_path.split()[0]))
-            image = np.asarray(self.reader.open(image_path),
-                               dtype=np.float32) / 255.0
+            image_path = os.path.join(data_path, remove_leading_slash(image_rel))
+            depth_path = os.path.join(gt_path, remove_leading_slash(depth_rel))
 
-            if self.mode == 'online_eval':
-                gt_path = self.config.gt_path_eval
-                depth_path = os.path.join(
-                    gt_path, remove_leading_slash(sample_path.split()[1]))
-                has_valid_depth = False
-                try:
-                    depth_gt = self.reader.open(depth_path)
-                    has_valid_depth = True
-                except IOError:
-                    depth_gt = False
-                    # print('Missing gt for {}'.format(image_path))
+            # Load HSI heatcube and depth (assume method='hsi')
+            image_npz_path = image_path.replace('.hdr', '_resampled.npz')
+            image = np.load(image_npz_path)['heatcube']
+            depth_gt = np.load(depth_path)['depth']
+            depth_gt = np.expand_dims(depth_gt, axis=2)
+            has_valid_depth = True
 
-                if has_valid_depth:
-                    depth_gt = np.asarray(depth_gt, dtype=np.float32)
-                    depth_gt = np.expand_dims(depth_gt, axis=2)
-                    if self.config.dataset == 'nyu':
-                        depth_gt = depth_gt / 1000.0
-                    else:
-                        depth_gt = depth_gt / 256.0
-
-                    mask = np.logical_and(
-                        depth_gt >= self.config.min_depth, depth_gt <= self.config.max_depth).squeeze()[None, ...]
-                else:
-                    mask = False
-
-            if self.config.do_kb_crop:
-                height = image.shape[0]
-                width = image.shape[1]
-                top_margin = int(height - 352)
-                left_margin = int((width - 1216) / 2)
-                image = image[top_margin:top_margin + 352,
-                              left_margin:left_margin + 1216, :]
-                if self.mode == 'online_eval' and has_valid_depth:
-                    depth_gt = depth_gt[top_margin:top_margin +
-                                        352, left_margin:left_margin + 1216, :]
+            mask = np.logical_and(
+                depth_gt >= self.config.min_depth, depth_gt <= self.config.max_depth).squeeze()[None, ...]
 
             if self.mode == 'online_eval':
                 sample = {'image': image, 'depth': depth_gt, 'focal': focal, 'has_valid_depth': has_valid_depth,
-                          'image_path': sample_path.split()[0], 'depth_path': sample_path.split()[1],
+                          'image_path': image_rel, 'depth_path': depth_rel,
                           'mask': mask}
             else:
                 sample = {'image': image, 'focal': focal}
@@ -433,7 +356,7 @@ class DataLoadPreprocess(Dataset):
 
         sample = self.postprocess(sample)
         sample['dataset'] = self.config.dataset
-        sample = {**sample, 'image_path': sample_path.split()[0], 'depth_path': sample_path.split()[1]}
+        sample = {**sample, 'image_path': image_rel, 'depth_path': depth_rel}
 
         return sample
 
@@ -480,21 +403,22 @@ class DataLoadPreprocess(Dataset):
 
             # Random gamma, brightness, color augmentation
             do_augment = random.random()
-            if do_augment > 0.5:
+            # TODO: Apply color augmentation only for 3-channel images
+            if do_augment > 0.5 and image.shape[2] == 3:
                 image = self.augment_image(image)
 
         return image, depth_gt
 
     def augment_image(self, image):
+        # Only augment if image has 3 channels
+        if image.shape[2] != 3:
+            return image
         # gamma augmentation
         gamma = random.uniform(0.9, 1.1)
         image_aug = image ** gamma
 
         # brightness augmentation
-        if self.config.dataset == 'nyu':
-            brightness = random.uniform(0.75, 1.25)
-        else:
-            brightness = random.uniform(0.9, 1.1)
+        brightness = random.uniform(0.9, 1.1)
         image_aug = image_aug * brightness
 
         # color augmentation
