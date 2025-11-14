@@ -10,7 +10,7 @@ from utils.image_utils import (_load_maybe_dict_npy, _local_to_global_mapping,
                                adjust_spectral_data, _compute_attenuation,
                                _compute_transmittance, _load_hadar_emissivity
                                )
-from forward_models.blackbody import blackbody
+from utils.blackbody import blackbody
 
 
 def generate_heatcubes(root_dir, out_root=None, scene_filter=None):
@@ -47,17 +47,10 @@ def generate_heatcubes(root_dir, out_root=None, scene_filter=None):
     attenuation_from_transmittance = attenuation_dict['attenuation']
     attenuation_units = attenuation_dict['attenuation_units']
 
-    # mask = (lambda_vals_file >= 8) & (lambda_vals_file <= 14)
-    # plt.plot(lambda_vals_file[mask], attenuation_from_transmittance[mask])
-    # plt.yscale('log')
-    # plt.show()
 
     adjusted_attenuation, lambda_vals_matched = adjust_spectral_data(np.concatenate([lambda_vals_file[:, None], attenuation_from_transmittance[:, None]], axis=1), 
                                                                        lambda_vals_desired,
                                                                        target_resolution_nm)
-    
-    # plt.plot(lambda_vals_matched, adjusted_attenuation)
-    # plt.show()
 
     B_air = blackbody(lambda_vals_matched, 293.15, 'microflicks') # ~20C
 
@@ -90,13 +83,6 @@ def generate_heatcubes(root_dir, out_root=None, scene_filter=None):
             elist = np.load(elist_src, allow_pickle=True)
             np.save(os.path.join(emap_dir, "eList.npy"), elist)
 
-        # Build mapping
-        if os.path.exists(elist_src):
-            local_to_global = _local_to_global_mapping(elist_src)
-        else:
-            local_to_global = None
-            print(f"Warning: eList not found for {scene}, using eMap as-is (may be incorrect).")
-
         # Process samples for each scene (using 5 sample IDs and two sides)
         for i in range(1, 6):
             for side in ['L', 'R']:
@@ -105,21 +91,14 @@ def generate_heatcubes(root_dir, out_root=None, scene_filter=None):
                 tmap_path = os.path.join(scene_input_dir, "GroundTruth", "tMap", f"tMap_{side}_{sample_id}.npy")
                 emap_path = os.path.join(scene_input_dir, "GroundTruth", "eMap", f"eMap_{side}_{sample_id}.npy")
                 depth_path = os.path.join(scene_input_dir, "GroundTruth", "Depth", f"Depth_{side}_{sample_id}.npy")
-                if not (os.path.exists(heatcube_path) and os.path.exists(tmap_path) and 
-                        os.path.exists(emap_path) and os.path.exists(depth_path)):
-                    continue
+
 
                 # Load raw arrays using dictionary extraction
                 tmap = _load_maybe_dict_npy(tmap_path, "tMap", dtype=np.uint8) # type: ignore
                 emap = _load_maybe_dict_npy(emap_path, "eMap", dtype=np.uint8)  # (H,W) local 1-based # type: ignore
                 depth = _load_maybe_dict_npy(depth_path, "depth", dtype=np.float32) # type: ignore
-
-                # Map local -> global (0-based)
-                if local_to_global is not None:
-                    mapped_emap = np.vectorize(local_to_global.get)(emap.astype(int))
-                    mapped_emap = np.where(mapped_emap == None, 0, mapped_emap).astype(int)  # fallback to 0
-                else:
-                    mapped_emap = emap.astype(int)
+  
+                mapped_emap = emap.astype(int)
 
 
                 # I saved the mapped emaps as images because is cheaper in terms 
@@ -143,34 +122,10 @@ def generate_heatcubes(root_dir, out_root=None, scene_filter=None):
                 B_obj = blackbody(lambda_vals_matched, T_obj, units='microflicks')
 
                 scene_emissivity = _load_hadar_emissivity(img_mapped_emap)
+                print(f"min and max of emissivity: {np.min(scene_emissivity)}, {np.max(scene_emissivity)}")
 
                 hyperspectral_simulated_image = scene_transmittance * \
                     (scene_emissivity * B_obj) + (1.0 - scene_transmittance) * B_air
-                
-                # add AWGN
-                # noise_std = 1.0
-                # hyperspectral_simulated_image += np.random.normal(0, noise_std,
-                #                                                   hyperspectral_simulated_image.shape)
-
-                # forward_model = AbsorptionForwardModel(
-                #     lambda_vals=lambda_vals_matched,
-                #     lambda_max=14,
-                #     d=d_map,
-                #     data_source='HADAR',
-                #     index=mapped_emap,                 # global indices
-                #     T_obj=T_obj,                       # Kelvin
-                #     T_air=293.15,                      # ~20C
-                #     noise_std=1.0,                     # add AWGN noise with std = 1 microflick
-                #     attenuation_units='log10_per_m'    # this are the units returned by SpectralData
-                # )
-
-                # try:
-                #     with warnings.catch_warnings():
-                #         warnings.simplefilter("error", RuntimeWarning)
-                #         heatcube_sim = forward_model.propagate('microflicks')
-                # except Exception as e:
-                #     print(f"Error in scene {scene} sample {side}_{sample_id}: {e}")
-                #     continue
 
                 # Save precomputed images
                 img_gray = Image.fromarray(get_rgb_image(hyperspectral_simulated_image, 'sum'))
@@ -185,6 +140,7 @@ def generate_heatcubes(root_dir, out_root=None, scene_filter=None):
                 new_filename_sim = f"{side}_{sample_id}_heatcube_sim.npy"
                 np.save(os.path.join(hc_dir, new_filename_sim), 
                         hyperspectral_simulated_image.astype(np.float32))
+                        
     print("Synthetic heatcubes generated with scene-specific structure.")
 
 if __name__ == '__main__':
